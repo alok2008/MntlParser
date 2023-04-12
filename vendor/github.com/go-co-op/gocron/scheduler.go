@@ -198,7 +198,13 @@ func (s *Scheduler) scheduleNextRun(job *Job) (bool, nextRun) {
 
 	next := s.durationToNextRun(lastRun, job)
 
-	job.setLastRun(job.NextRun())
+	jobNextRun := job.NextRun()
+	if jobNextRun.After(now) {
+		job.setLastRun(now)
+	} else {
+		job.setLastRun(jobNextRun)
+	}
+
 	if next.dateTime.IsZero() {
 		next.dateTime = lastRun.Add(next.duration)
 		job.setNextRun(next.dateTime)
@@ -211,7 +217,7 @@ func (s *Scheduler) scheduleNextRun(job *Job) (bool, nextRun) {
 // durationToNextRun calculate how much time to the next run, depending on unit
 func (s *Scheduler) durationToNextRun(lastRun time.Time, job *Job) nextRun {
 	// job can be scheduled with .StartAt()
-	if job.getStartAtTime().After(lastRun) {
+	if job.getFirstAtTime() == 0 && job.getStartAtTime().After(lastRun) {
 		return nextRun{duration: job.getStartAtTime().Sub(s.now()), dateTime: job.getStartAtTime()}
 	}
 
@@ -226,6 +232,9 @@ func (s *Scheduler) durationToNextRun(lastRun time.Time, job *Job) nextRun {
 			next = s.calculateWeekday(job, lastRun)
 		} else {
 			next = s.calculateWeeks(job, lastRun)
+		}
+		if next.dateTime.Before(job.getStartAtTime()) {
+			return s.durationToNextRun(job.getStartAtTime(), job)
 		}
 	case months:
 		next = s.calculateMonths(job, lastRun)
@@ -327,7 +336,22 @@ func (s *Scheduler) calculateWeekday(job *Job, lastRun time.Time) nextRun {
 
 func (s *Scheduler) calculateWeeks(job *Job, lastRun time.Time) nextRun {
 	totalDaysDifference := int(job.getInterval()) * 7
-	next := s.roundToMidnightAndAddDSTAware(lastRun, job.getFirstAtTime()).AddDate(0, 0, totalDaysDifference)
+
+	var next time.Time
+
+	atTimes := job.atTimes
+	for _, at := range atTimes {
+		n := s.roundToMidnightAndAddDSTAware(lastRun, at)
+		if n.After(s.now()) {
+			next = n
+			break
+		}
+	}
+
+	if next.IsZero() {
+		next = s.roundToMidnightAndAddDSTAware(lastRun, job.getFirstAtTime()).AddDate(0, 0, totalDaysDifference)
+	}
+
 	return nextRun{duration: until(lastRun, next), dateTime: next}
 }
 
@@ -964,6 +988,15 @@ func (s *Scheduler) Tag(t ...string) *Scheduler {
 
 	job.tags = append(job.tags, t...)
 	return s
+}
+
+// GetAllTags returns all tags.
+func (s *Scheduler) GetAllTags() []string {
+	var tags []string
+	for _, job := range s.Jobs() {
+		tags = append(tags, job.Tags()...)
+	}
+	return tags
 }
 
 // StartAt schedules the next run of the Job. If this time is in the past, the configured interval will be used
